@@ -67,7 +67,7 @@ def resolve_emails(refs):
     for ref in refs:
         if isinstance(ref, dict) and ref.get("relationTo") == "users":
             val = ref.get("value")
-            # Forza la conversione in ObjectId se è una stringa
+            # Force ObjectId conversion
             if isinstance(val, str):
                 try:
                     ids.append(ObjectId(val))
@@ -79,7 +79,7 @@ def resolve_emails(refs):
     if not ids:
         return []
 
-    # Esegui la query
+    # Execute query
     users = users_col.find({"_id": {"$in": ids}}, {"email": 1})
     return [u["email"] for u in users if "email" in u]
 

@@ -18,9 +18,7 @@ const Communications: CollectionConfig = {
     delete: () => {
       return false;
     },
-    update: () => {
-      return false;
-    },
+    update: access.GetIsAdmin,
   },
   admin: {
     ...collectionUtils.GeneratePreviewConfig(),
@@ -32,8 +30,8 @@ const Communications: CollectionConfig = {
   },
   hooks: {
     afterChange: [
-      async ({ doc }) => {
-        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true") {
+      async ({ doc, operation }) => {  
+        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true" && operation === "create") { 
           if (doc.status !== "pending") {
             await payload.update({
               collection: Slugs.Communications,
@@ -44,7 +42,7 @@ const Communications: CollectionConfig = {
           return doc; 
         }
         const { tos, ccs, bccs, subject, body } = doc;
-        for (const part of body) {                        // Nei CMS headless, il body è sempre un array
+        for (const part of body) {                        
           if (part.type !== "upload") {                   
             continue;
           }
