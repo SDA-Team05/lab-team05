@@ -199,7 +199,7 @@ def run_worker():
     
     while True:
         try:
-            query = "/api/communications?where[status][equals]=pending&depth=1"
+            query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
             response = api_request("GET", query)
             docs = response.get("docs", [])
             
