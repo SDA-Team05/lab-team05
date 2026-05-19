@@ -125,7 +125,7 @@ def run_worker():
     while True:
         try:
             # Get pending documents
-            query = "/api/communications?where[status][equals]=pending&sort=createdAt&limit=1&depth=1"
+            query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
             response = api_request("GET", query)
             docs = response.get("docs", [])
 
