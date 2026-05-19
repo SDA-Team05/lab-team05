@@ -6,7 +6,6 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
-import requests
 import structlog
 
 # OpenTelemetry — tracing
@@ -20,13 +19,10 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 # OpenTelemetry — metrics
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.exporter.prometheus import PrometheusMetricReader  # <-- Updated import
+from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from prometheus_client import start_http_server
 
 load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 API_URL = os.environ["MZINGA_API_URL"]
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
@@ -40,7 +36,6 @@ SERVICE_NAME_VALUE = os.getenv("OTEL_SERVICE_NAME", "email-worker")
 PROMETHEUS_PORT = int(os.getenv("PROMETHEUS_PORT", 8000))
 
 # OpenTelemetry - Tracing
-
 resource = Resource(attributes={
     SERVICE_NAME: SERVICE_NAME_VALUE,
     SERVICE_VERSION: "1.0.0",
@@ -52,11 +47,9 @@ tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 trace.set_tracer_provider(tracer_provider)
 
 RequestsInstrumentor().instrument()
-
 tracer = trace.get_tracer(SERVICE_NAME_VALUE)
 
 # OpenTelemetry - Metrics
-
 start_http_server(port=PROMETHEUS_PORT)
 metric_reader = PrometheusMetricReader()
 meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
@@ -86,7 +79,6 @@ poll_counter = meter.create_counter(
 )
 
 def add_otel_context(logger, method, event_dict):
-    """Inject active trace_id and span_id into every log entry."""
     span = trace.get_current_span()
     ctx = span.get_span_context()
     if ctx.is_valid:
@@ -111,15 +103,32 @@ log = structlog.get_logger(service=SERVICE_NAME_VALUE)
 current_token = None
 
 def get_auth_token():
-    """Gets a new authentication token using admin credentials."""
     url = f"{API_URL}/api/users/login"
     payload = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
     response = requests.post(url, json=payload)
     response.raise_for_status()
     return response.json().get("token")
 
-def slate_to_html(nodes):
-    """Recursively converts Slate AST nodes to HTML string."""
+def api_request(method, endpoint, data=None):
+    global current_token
+    if not current_token:
+        current_token = get_auth_token()
+    
+    url = f"{API_URL}{endpoint}"
+    headers = {"Authorization": f"Bearer {current_token}"}
+    
+    response = requests.request(method, url, headers=headers, json=data)
+    
+    if response.status_code == 401:
+        log.info("token_expired_reauthenticating")
+        current_token = get_auth_token()
+        headers["Authorization"] = f"Bearer {current_token}"
+        response = requests.request(method, url, headers=headers, json=data)
+        
+    response.raise_for_status()
+    return response.json()
+
+def serialize_body(nodes):
     html = ""
     for node in nodes:
         if "text" in node:
@@ -132,7 +141,7 @@ def slate_to_html(nodes):
             continue
 
         node_type = node.get("type")
-        children_html = slate_to_html(node.get("children", []))
+        children_html = serialize_body(node.get("children", []))
 
         if node_type == "paragraph":
             html += f"<p>{children_html}</p>"
@@ -152,108 +161,105 @@ def slate_to_html(nodes):
             
     return html
 
-def api_request(method, endpoint, data=None):
-    """Makes an API request. If the token expires (401), logs in again and retries."""
-    global current_token
-    if not current_token:
-        current_token = get_auth_token()
-    
-    url = f"{API_URL}{endpoint}"
-    headers = {"Authorization": f"Bearer {current_token}"}
-    
-    response = requests.request(method, url, headers=headers, json=data)
-    
-    if response.status_code == 401:
-        logging.info("Token expired. Logging in again...")
-        current_token = get_auth_token()
-        headers["Authorization"] = f"Bearer {current_token}"
-        response = requests.request(method, url, headers=headers, json=data)
-        
-    response.raise_for_status()
-    return response.json()
-
 def resolve_emails(refs):
-    """Resolves Payload relationship references to email addresses."""
     if not refs or not isinstance(refs, list):
         return []
-    
     emails = []
     for ref in refs:
-        # Now value includes the user data directly due to depth=1
         if isinstance(ref, dict) and ref.get("relationTo") == "users":
             user_data = ref.get("value")
             if isinstance(user_data, dict) and "email" in user_data:
                 emails.append(user_data["email"])
     return emails
 
-
 def send_email(to_list, cc_list, bcc_list, subject, html_body):
-    """Sends email using standard smtplib."""
-    msg = MIMEMultipart()
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
-    msg["To"] = ", ".join(to_list)
-    if cc_list:
-        msg["Cc"] = ", ".join(cc_list)
-    
-    msg.attach(MIMEText(html_body, "html"))
-    
-    all_recipients = to_list + cc_list + bcc_list
-    
-    if not all_recipients:
-        log.warning("No recipients found. Skipping SMTP send.")
-        return
+    with tracer.start_as_current_span("send_email") as span:
+        span.set_attribute("recipient_count", len(to_list))
+        t0 = time.perf_counter()
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_FROM
+        msg["To"] = ", ".join(to_list)
+        if cc_list:
+            msg["Cc"] = ", ".join(cc_list)
+        
+        msg.attach(MIMEText(html_body, "html"))
+        all_recipients = to_list + (cc_list or []) + (bcc_list or [])
+        
+        if not all_recipients:
+            log.warning("no_recipients_found_skipping")
+            return
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.send_message(msg, to_addrs=all_recipients)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.sendmail(EMAIL_FROM, all_recipients, msg.as_string())
+        smtp_duration.record(time.perf_counter() - t0)
 
 def run_worker():
-    log.info(f"Worker connected to API. Polling every {POLL_INTERVAL_SECONDS}s...")
+    log.info("worker_started", poll_interval_s=POLL_INTERVAL_SECONDS, prometheus_port=PROMETHEUS_PORT)
     
     while True:
         try:
-            # Get pending documents
-            query = "/api/communications?where[status][equals]=pending&sort=createdAt&limit=1&depth=1"
+            query = "/api/communications?where[status][equals]=pending&depth=1"
             response = api_request("GET", query)
             docs = response.get("docs", [])
-
+            
             if not docs:
+                poll_counter.add(1, {"result": "empty"})
                 time.sleep(POLL_INTERVAL_SECONDS)
                 continue
-
+                
+            poll_counter.add(1, {"result": "found"})
             doc = docs[0]
             doc_id = doc["id"]
+
             structlog.contextvars.bind_contextvars(doc_id=doc_id)
 
-            try:
-                log.info(f"Processing Communication ID: {doc_id}")
+            with tracer.start_as_current_span("process_communication") as span:
+                span.set_attribute("doc_id", doc_id)
+                t0 = time.perf_counter()
+                log.info("processing_started")
 
-                # Mark communication status as processing
-                api_request("PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
+                try:
+                    api_request("PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
 
-                tos = resolve_emails(doc.get("tos", []))
-                ccs = resolve_emails(doc.get("ccs", []))
-                bccs = resolve_emails(doc.get("bccs", []))
+                    tos = resolve_emails(doc.get("tos", []))
+                    ccs = resolve_emails(doc.get("ccs", []))
+                    bccs = resolve_emails(doc.get("bccs", []))
 
-                html_content = slate_to_html(doc.get("body", []))
+                    with tracer.start_as_current_span("serialize_body") as s:
+                        body_nodes = doc.get("body", [])
+                        s.set_attribute("node_count", len(body_nodes))
+                        html_content = serialize_body(body_nodes)
 
-                send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
+                    send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
 
-                api_request("PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
-                log.info(f"Successfully sent: {doc_id}")
+                    api_request("PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
+                    
+                    duration = time.perf_counter() - t0
+                    processing_duration.record(duration)
+                    emails_processed.add(1, {"status": "sent", "recipient_count": len(tos)})
+                    log.info("processing_completed", status="sent", duration_s=round(duration, 3))
 
-            except Exception as e:
-                log.error(f"Error processing {doc_id}: {e}")
-                api_request("PATCH", f"/api/communications/{doc_id}", {
-                    "status": "failed", 
-                    "error": str(e)
-                })
+                except Exception as e:
+                    span.set_status(trace.StatusCode.ERROR, str(e))
+                    span.record_exception(e)
+                    log.error("processing_failed", error=str(e))
+                    
+                    emails_processed.add(1, {"status": "failed", "recipient_count": 0})
+                    
+                    try:
+                        api_request("PATCH", f"/api/communications/{doc_id}", {
+                            "status": "failed", 
+                            "error": str(e)
+                        })
+                    except Exception as patch_err:
+                        log.error("failed_to_update_status", error=str(patch_err))
+
+            structlog.contextvars.unbind_contextvars("doc_id")
 
         except Exception as e:
-            log.error(f"Error during polling loop: {e}")
+            log.error("error_during_polling_loop", error=str(e))
             time.sleep(POLL_INTERVAL_SECONDS)
-            
-        structlog.contextvars.unbind_contextvars("doc_id")
 
 if __name__ == "__main__":
     run_worker()
