@@ -133,14 +133,15 @@ def api_request(session: requests.Session, method: str, endpoint: str, data: Opt
     return response.json() if response.content else {}
 
 def serialize_body(nodes: List[Dict[str, Any]]) -> str:
+    """Recursively converts Slate AST nodes to HTML string."""
     html = ""
     for node in nodes:
         if "text" in node:
             text = node["text"]
             if node.get("bold"):
-                text = f"<b>{text}</b>"
+                text = f"<strong>{text}</strong>"
             if node.get("italic"):
-                text = f"<i>{text}</i>"
+                text = f"<em>{text}</em>"
             html += text
             continue
 
@@ -165,7 +166,8 @@ def serialize_body(nodes: List[Dict[str, Any]]) -> str:
             
     return html
 
-def resolve_emails(refs):
+def resolve_emails(refs: List[Dict]) -> List[str]:
+    """Resolves Payload relationship references to email addresses."""
     if not refs or not isinstance(refs, list):
         return []
     emails = []
@@ -189,10 +191,15 @@ def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subj
         if cc_list: msg["Cc"] = ", ".join(cc_list)
         
         msg.attach(MIMEText(html_body, "html"))
+        
         all_recipients = to_list + (cc_list or []) + (bcc_list or [])
+        
+        if not all_recipients:
+            log.warning("No recipients found. Skipping SMTP send.")
+            return
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.sendmail(EMAIL_FROM, all_recipients, msg.as_string())
+            server.send_message(msg, to_addrs=all_recipients)
             
         smtp_duration.record(time.perf_counter() - t0)
 
@@ -251,6 +258,12 @@ def run_worker() -> None:
     log.info("worker_started", poll_interval_s=POLL_INTERVAL_SECONDS, prometheus_port=PROMETHEUS_PORT)
     
     with requests.Session() as session:
+        try:
+            log.info("performing_initial_authentication")
+            authenticate(session)
+        except Exception as e:
+            log.error("failed_to_authenticate", error=str(e))
+            return
         while True:
             try:
                 query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
