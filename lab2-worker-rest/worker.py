@@ -161,6 +161,12 @@ def run_worker():
     logger.info(f"Worker connected to API. Polling every {POLL_INTERVAL_SECONDS}s...")
     
     with requests.Session() as session:
+        try:
+            logger.info("Performing initial API authentication...")
+            authenticate(session)
+        except Exception as e:
+            logger.error(f"Fatal: Could not authenticate with MZinga API: {e}")
+            return
         while True:
             try:
                 query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
