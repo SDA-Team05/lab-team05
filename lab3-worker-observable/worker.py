@@ -22,6 +22,8 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from prometheus_client import start_http_server
 
+from typing import Optional, Dict, List, Any
+
 load_dotenv()
 
 API_URL = os.environ["MZINGA_API_URL"]
@@ -78,7 +80,7 @@ poll_counter = meter.create_counter(
     unit="1",
 )
 
-def add_otel_context(logger, method, event_dict):
+def add_otel_context(logger: logging.Logger, method: str, event_dict: dict) -> dict:
     span = trace.get_current_span()
     ctx = span.get_span_context()
     if ctx.is_valid:
@@ -102,46 +104,49 @@ log = structlog.get_logger(service=SERVICE_NAME_VALUE)
 
 current_token = None
 
-def get_auth_token():
+def authenticate(session: requests.Session) -> None:
+    """Authenticates the session and updates its headers with the token."""
     url = f"{API_URL}/api/users/login"
     payload = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
-    response = requests.post(url, json=payload)
+    response = session.post(url, json=payload)
     response.raise_for_status()
-    return response.json().get("token")
+    
+    token = response.json().get("token")
+    session.headers.update({"Authorization": f"Bearer {token}"})
+    log.info("authenticated")
 
-def api_request(method, endpoint, data=None):
-    global current_token
-    if not current_token:
-        current_token = get_auth_token()
-    
+def api_request(session: requests.Session, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
+    """Executes an API request with automatic re-authentication on 401 errors."""
     url = f"{API_URL}{endpoint}"
-    headers = {"Authorization": f"Bearer {current_token}"}
     
-    response = requests.request(method, url, headers=headers, json=data)
+    if "Authorization" not in session.headers:
+        authenticate(session)
+
+    response = session.request(method, url, json=data)
     
     if response.status_code == 401:
         log.info("token_expired_reauthenticating")
-        current_token = get_auth_token()
-        headers["Authorization"] = f"Bearer {current_token}"
-        response = requests.request(method, url, headers=headers, json=data)
+        authenticate(session)
+        response = session.request(method, url, json=data)
         
     response.raise_for_status()
-    return response.json()
+    return response.json() if response.content else {}
 
-def serialize_body(nodes):
+def serialize_body(nodes: List[Dict[str, Any]]) -> str:
+    """Recursively converts Slate AST nodes to HTML string."""
     html = ""
     for node in nodes:
         if "text" in node:
             text = node["text"]
             if node.get("bold"):
-                text = f"<b>{text}</b>"
+                text = f"<strong>{text}</strong>"
             if node.get("italic"):
-                text = f"<i>{text}</i>"
+                text = f"<em>{text}</em>"
             html += text
             continue
 
         node_type = node.get("type")
-        children_html = serialize_body(node.get("children", []))
+        children_html = serialize_body(node.get("children") or [])
 
         if node_type == "paragraph":
             html += f"<p>{children_html}</p>"
@@ -161,7 +166,8 @@ def serialize_body(nodes):
             
     return html
 
-def resolve_emails(refs):
+def resolve_emails(refs: List[Dict]) -> List[str]:
+    """Resolves Payload relationship references to email addresses."""
     if not refs or not isinstance(refs, list):
         return []
     emails = []
@@ -172,94 +178,111 @@ def resolve_emails(refs):
                 emails.append(user_data["email"])
     return emails
 
-def send_email(to_list, cc_list, bcc_list, subject, html_body):
+def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subject: str, html_body: str) -> None:
+    """Sends an email using SMTP. Measures the duration of the send operation and records it in a histogram."""
     with tracer.start_as_current_span("send_email") as span:
         span.set_attribute("recipient_count", len(to_list))
         t0 = time.perf_counter()
+        
         msg = MIMEMultipart()
         msg["Subject"] = subject
         msg["From"] = EMAIL_FROM
         msg["To"] = ", ".join(to_list)
-        if cc_list:
-            msg["Cc"] = ", ".join(cc_list)
+        if cc_list: msg["Cc"] = ", ".join(cc_list)
         
         msg.attach(MIMEText(html_body, "html"))
+        
         all_recipients = to_list + (cc_list or []) + (bcc_list or [])
         
         if not all_recipients:
-            log.warning("no_recipients_found_skipping")
+            log.warning("No recipients found. Skipping SMTP send.")
             return
 
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.sendmail(EMAIL_FROM, all_recipients, msg.as_string())
+            server.send_message(msg, to_addrs=all_recipients)
+            
         smtp_duration.record(time.perf_counter() - t0)
 
-def run_worker():
-    log.info("worker_started", poll_interval_s=POLL_INTERVAL_SECONDS, prometheus_port=PROMETHEUS_PORT)
-    
-    while True:
+def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
+    """Processes a single communication document: updates status, resolves emails, serializes body, sends email, and updates status again. All steps are traced and logged."""
+    doc_id = doc["id"]
+    structlog.contextvars.bind_contextvars(doc_id=doc_id)
+
+    with tracer.start_as_current_span("process_communication") as span:
+        span.set_attribute("doc_id", doc_id)
+        t0 = time.perf_counter()
+        log.info("processing_started")
+
         try:
-            query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
-            response = api_request("GET", query)
-            docs = response.get("docs", [])
+            api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
+
+            tos = resolve_emails(doc.get("tos", []))
+            ccs = resolve_emails(doc.get("ccs", []))
+            bccs = resolve_emails(doc.get("bccs", []))
             
-            if not docs:
-                poll_counter.add(1, {"result": "empty"})
-                time.sleep(POLL_INTERVAL_SECONDS)
-                continue
-                
-            poll_counter.add(1, {"result": "found"})
-            doc = docs[0]
-            doc_id = doc["id"]
+            if not tos:
+                raise ValueError("No valid 'to' email addresses found")
 
-            structlog.contextvars.bind_contextvars(doc_id=doc_id)
+            with tracer.start_as_current_span("serialize_body") as s:
+                body_nodes = doc.get("body", [])
+                s.set_attribute("node_count", len(body_nodes))
+                html_content = serialize_body(body_nodes)
 
-            with tracer.start_as_current_span("process_communication") as span:
-                span.set_attribute("doc_id", doc_id)
-                t0 = time.perf_counter()
-                log.info("processing_started")
+            send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
 
-                try:
-                    api_request("PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
-
-                    tos = resolve_emails(doc.get("tos", []))
-                    ccs = resolve_emails(doc.get("ccs", []))
-                    bccs = resolve_emails(doc.get("bccs", []))
-
-                    with tracer.start_as_current_span("serialize_body") as s:
-                        body_nodes = doc.get("body", [])
-                        s.set_attribute("node_count", len(body_nodes))
-                        html_content = serialize_body(body_nodes)
-
-                    send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
-
-                    api_request("PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
-                    
-                    duration = time.perf_counter() - t0
-                    processing_duration.record(duration)
-                    emails_processed.add(1, {"status": "sent", "recipient_count": len(tos)})
-                    log.info("processing_completed", status="sent", duration_s=round(duration, 3))
-
-                except Exception as e:
-                    span.set_status(trace.StatusCode.ERROR, str(e))
-                    span.record_exception(e)
-                    log.error("processing_failed", error=str(e))
-                    
-                    emails_processed.add(1, {"status": "failed", "recipient_count": 0})
-                    
-                    try:
-                        api_request("PATCH", f"/api/communications/{doc_id}", {
-                            "status": "failed", 
-                            "error": str(e)
-                        })
-                    except Exception as patch_err:
-                        log.error("failed_to_update_status", error=str(patch_err))
-
-            structlog.contextvars.unbind_contextvars("doc_id")
+            api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
+            
+            duration = time.perf_counter() - t0
+            processing_duration.record(duration)
+            emails_processed.add(1, {"status": "sent", "recipient_count": len(tos)})
+            log.info("processing_completed", status="sent", duration_s=round(duration, 3))
 
         except Exception as e:
-            log.error("error_during_polling_loop", error=str(e))
-            time.sleep(POLL_INTERVAL_SECONDS)
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            span.record_exception(e)
+            log.error("processing_failed", error=str(e))
+            
+            emails_processed.add(1, {"status": "failed", "recipient_count": 0})
+            
+            try:
+                api_request(session, "PATCH", f"/api/communications/{doc_id}", {
+                    "status": "failed", 
+                    "error": str(e)
+                })
+            except Exception as patch_err:
+                log.error("failed_to_update_status", error=str(patch_err))
+
+    structlog.contextvars.unbind_contextvars("doc_id")
+
+def run_worker() -> None:
+    log.info("worker_started", poll_interval_s=POLL_INTERVAL_SECONDS, prometheus_port=PROMETHEUS_PORT)
+    
+    with requests.Session() as session:
+        try:
+            log.info("performing_initial_authentication")
+            authenticate(session)
+        except Exception as e:
+            log.error("failed_to_authenticate", error=str(e))
+            return
+        while True:
+            try:
+                query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
+                response_data = api_request(session, "GET", query)
+                docs = response_data.get("docs", [])
+                
+                if not docs:
+                    poll_counter.add(1, {"result": "empty"})
+                    time.sleep(POLL_INTERVAL_SECONDS)
+                    continue
+                    
+                poll_counter.add(1, {"result": "found", "count": len(docs)})
+
+                for doc in docs:
+                    process_document(session, doc)
+
+            except Exception as e:
+                log.error("error_during_polling_loop", error=str(e))
+                time.sleep(POLL_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
     run_worker()
