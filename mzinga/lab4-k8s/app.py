@@ -4,7 +4,7 @@ import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 VERSION = os.getenv("APP_VERSION", "1.0.0")
-APP_COLOR = os.getenv("APP_COLOR", "white")
+APP_COLOR = os.getenv("APP_COLOR", "blue")
 
 
 class Handler(BaseHTTPRequestHandler):
