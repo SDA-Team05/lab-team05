@@ -1,37 +1,37 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: g05-lab04-blue
+  name: g05-lab04-canary
   namespace: mzinga-lab4
   labels:
     app: g05-lab04
-    slot: blue
+    track: canary
 spec:
-  # We want 3 replicas of our application to be running at all times
-  replicas: 3
+  # We want 1 replica of our application
+  replicas: 1
   selector:
     matchLabels:
       app: g05-lab04
-      slot: blue
+      track: canary
   template:
     metadata:
       labels:
         app: g05-lab04
-        slot: blue
-        version: v1
+        track: canary
+        version: v2
     spec:
       containers:
         - name: g05-lab04
-          image: mzinga-webapp:1.0.0
+          image: mzinga-webapp:2.0.0
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
           env:
           # Environment variables injected in the container
             - name: APP_VERSION
-              value: "1.0.0"
+              value: "2.0.0"
             - name: APP_COLOR
-              value: "blue"
+              value: "green"
           readinessProbe:
             httpGet:
               path: /health

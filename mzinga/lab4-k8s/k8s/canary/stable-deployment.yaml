@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: g05-lab04-blue
+  name: g05-lab04-stable
   namespace: mzinga-lab4
   labels:
     app: g05-lab04
-    slot: blue
+    track: stable
 spec:
-  # We want 3 replicas of our application to be running at all times
-  replicas: 3
+  # We want 9 replicas of our application to be running at all times
+  replicas: 9
   selector:
     matchLabels:
       app: g05-lab04
-      slot: blue
+      track: stable
   template:
     metadata:
       labels:
         app: g05-lab04
-        slot: blue
+        track: stable
         version: v1
     spec:
       containers:

@@ -13,15 +13,12 @@ spec:
     matchLabels:
       app: g05-lab04
       slot: green
-  strategy:
-  # Updated strategy
-    type: Recreate
   template:
     metadata:
       labels:
         app: g05-lab04
         slot: green
-        version: v1
+        version: v2
     spec:
       containers:
         - name: g05-lab04
