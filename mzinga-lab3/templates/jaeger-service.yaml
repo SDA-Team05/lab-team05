@@ -1,0 +1,19 @@
+# templates/mzinga-apps-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-jaeger
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: {{ .Release.Name }}-jaeger
+  ports:
+    - port: {{ .Values.jaeger.service.uiPort }}
+      targetPort: {{ .Values.jaeger.service.uiPort }}
+      name: ui
+    - port: {{ .Values.jaeger.service.otlpGrpcPort }}
+      targetPort: {{ .Values.jaeger.service.otlpGrpcPort }}
+      name: otlp-grpc
+    - port: {{ .Values.jaeger.service.otlpHttpPort }}
+      targetPort: {{ .Values.jaeger.service.otlpHttpPort }}
+      name: otlp-http 

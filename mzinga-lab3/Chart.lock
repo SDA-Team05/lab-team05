@@ -1,12 +1,12 @@
 dependencies:
 - name: mongodb
-  repository: https://charts.bitnami.com/bitnami
-  version: 15.6.26
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 15.0.0
 - name: rabbitmq
-  repository: https://charts.bitnami.com/bitnami
-  version: 14.7.0
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 14.0.0
 - name: redis
-  repository: https://charts.bitnami.com/bitnami
-  version: 19.6.4
-digest: sha256:78550bea82b3439025487b17f89e838a1a1ba676ff4b115469dd5812ee83c284
-generated: "2026-05-22T13:05:55.212269+02:00"
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 19.0.0
+digest: sha256:1f16a30edfbfdc520d49355b6bfff17e9be66a56c6393ad6155e844b9c71b172
+generated: "2026-05-22T16:57:20.005502+02:00"
