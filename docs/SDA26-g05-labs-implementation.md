@@ -43,7 +43,7 @@ We set it so that, if an environment variable we define (**COMMUNICATIONS_EXTERN
 ```javascript
     afterChange: [
         async ({ doc, operation }) => {  
-        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true" && operation === "create") { 
+        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true") { 
             if (doc.status !== "pending") {
             await payload.update({
                 collection: Slugs.Communications,
@@ -66,6 +66,14 @@ If set to false, we keep the old logic and set the document status to "sent":
     });
 ```
 
+To avoid endless loops, we add a guard on top of the hook:
+
+```javascript
+    if (doc.status === "pending" || doc.status === "sent") {
+        return doc;
+    }
+```
+
 #### Environment Variable
 
 After that, we set our environment variable to true, in order to start testing our new microservice.
@@ -77,6 +85,7 @@ COMMUNICATIONS_EXTERNAL_WORKER=true
 ### Microservice Setup
 
 #### Environment Variables
+
 ```python
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:admin@localhost:27017/mzinga?authSource=admin&directConnection=true")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "5"))
@@ -84,7 +93,9 @@ SMTP_HOST = os.getenv("SMTP_HOST", "localhost")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "1025"))
 EMAIL_FROM = os.getenv("EMAIL_FROM", "worker@mzinga.io")
 ```
+
 #### Logger
+
 ```python
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -103,6 +114,10 @@ users_col = db.users
 When developing this first instance of the worker, we developed the first methods that implement the core logic of the microservice, that would be used also in the following versions.
 
 #### serialize_body
+
+In MZinga, the body of a communication is a Slate SAT: a list of node objects with a type and children.
+This function converts this structure in an HTML string, translating the supported tags to their HTML equivalent.
+
 ```python 
 def serialize_body(nodes: List[Dict[str, Any]]) -> str:
     """Recursively converts Slate AST nodes to HTML string."""
@@ -140,6 +155,10 @@ def serialize_body(nodes: List[Dict[str, Any]]) -> str:
 ```
 
 #### resolve_emails
+
+In MZinga, the email recipients (tos), the Carbon Copies (ccs) and the Blind Carbon Copies (bccs) are not directly present in the communication, but are implemented as a reference to the actual addresses in the *users* collection.
+For this reason, we need a function to resolve the ids to actual email addresses.
+
 ```python
 def resolve_emails(refs: List[Dict]) -> List[str]:
     """Resolves Payload relationship references to email addresses."""
@@ -168,6 +187,9 @@ def resolve_emails(refs: List[Dict]) -> List[str]:
 ```
 
 #### send_email
+
+This function builds a MIMEMultipart message with all of the required information, and sends it using Python's built-in smtplib.
+
 ```python 
 def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subject: str, html_body: str) -> None:
     """Sends email using standard smtplib."""
@@ -191,6 +213,13 @@ def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subj
 ```
 
 #### process
+
+The core function of the worker, which:
+- Gathers all of the addresses with the *resolve_emails* function
+- Converts the body to html with the *serialize_body* function
+- Sends the email with the *resolve_emails* function
+- Sets the doc status to *sent*
+
 ```python 
 def process(doc: Dict[str, Any]) -> None:
     doc_id = doc["_id"]
@@ -216,7 +245,15 @@ def process(doc: Dict[str, Any]) -> None:
         )
 ```
 
-### Complete Worker Flow
+### Main loop
+
+With all of the previous functions declared, we can write the "main" function, which:
+- Logs the startup
+- Polls one pending document
+- Immediately sets its status to *processing*, to prevent two worker instances from processing the same document.
+- Calls the *process* function, which gathers and converts all the necessary data and sends the email
+- Sleeps for the configured time before trying to poll again
+
 ```python
 def run_worker():
     logger.info(f"Worker connected to MongoDB. Polling every {POLL_INTERVAL_SECONDS}s...")
