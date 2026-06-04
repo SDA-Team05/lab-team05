@@ -5,17 +5,71 @@ The laboratory revolves around decoupling the Email processing function from MZi
 
 ## Lab 1: DB-Coupled External Worker
 
-### Goal
-Introduce a new service, with the responsibility of reading the communications pending processing from the MongoDB database.
-
-The first extraction. A new service is introduced alongside the monolith, reading directly from the shared MongoDB database. The monolith's hook is reduced to a status flag write. The Strangler Fig pattern governs the transition. The Shared Database integration pattern governs the coupling.
-
-When developing this first instance of the worker, we developed the first two methods that
+The goal for the lab was to introduce a new service, with the responsibility of reading the communications pending processing from the MongoDB database. In this first version, the service reads directly from the shared MongoDB database. 
 
 ### MZinga Setup
 
+The first thing that needs to be done is configuring MZinga to allow the usage of an external worker for email processing.
 
-#### Environment Variables
+#### Add field to Communications
+
+To allow our worker to understand which communications need to be processed, we must add a "status" fields to the communications.
+
+```javascript
+    {
+      name: "status",
+      type: "select",
+      admin: {
+        readOnly: true,
+        position: "sidebar",
+      },
+      options: [
+        { label: "Pending", value: "pending" },
+        { label: "Processing", value: "processing" },
+        { label: "Sent", value: "sent" },
+        { label: "Failed", value: "failed" },
+      ],
+    },
+```
+
+To show this field in the GUI, we must add it to the "defaultColumns" list in the admin block:
+
+```javascript
+    defaultColumns: ["subject", "tos", "status"],
+```
+
+And last, we need to modify the afterChange hook in order to support the new field.
+We set it so that, if an environment variable we define (**COMMUNICATIONS_EXTERNAL_WORKER**) is set to "true", once a document is created we set the document status to "pending" and we immediately return:
+```javascript
+    afterChange: [
+        async ({ doc, operation }) => {  
+        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true" && operation === "create") { 
+            if (doc.status !== "pending") {
+            await payload.update({
+                collection: Slugs.Communications,
+                id: doc.id,
+                data: { status: "pending" },
+            });
+            }
+            return doc; 
+        }
+        ...
+```
+If set to false, we keep the old logic and set the document status to "sent":
+
+```javascript
+    ...
+    await payload.update({
+    collection: Slugs.Communications,
+    id: doc.id,
+    data: { status: "sent" },
+    });
+```
+
+#### Environment Variable
+
+After that, we set our environment variable to true, in order to start testing our new microservice.
+
 ```python
 COMMUNICATIONS_EXTERNAL_WORKER=true
 ```
@@ -45,6 +99,9 @@ users_col = db.users
 ```
 
 ### Utility methods
+
+When developing this first instance of the worker, we developed the first methods that implement the core logic of the microservice, that would be used also in the following versions.
+
 #### serialize_body
 ```python 
 def serialize_body(nodes: List[Dict[str, Any]]) -> str:
@@ -353,8 +410,6 @@ async def run_worker():
                             logger.error(f"HTTP error processing message: {e}")
                             raise
 ```
-
-
 
 ## Lab 3: REST API-Coupled External Worker with structured logging and telemetry
 
