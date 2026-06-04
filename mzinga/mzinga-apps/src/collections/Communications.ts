@@ -112,6 +112,11 @@ const Communications: CollectionConfig = {
             );
           }
           await Promise.all(promises.filter((p) => Boolean(p)));
+          await payload.update({
+            collection: Slugs.Communications,
+            id: doc.id,
+            data: { status: "sent" },
+          });
           return doc;
         } catch (err) {
           if (err.response && err.response.body && err.response.body.errors) {
