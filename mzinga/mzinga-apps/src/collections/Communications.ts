@@ -31,7 +31,10 @@ const Communications: CollectionConfig = {
   hooks: {
     afterChange: [
       async ({ doc, operation }) => {  
-        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true" && operation === "create") { 
+        if (doc.status === "pending" || doc.status === "sent") {
+          return doc;
+        }
+        if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true") { 
           if (doc.status !== "pending") {
             await payload.update({
               collection: Slugs.Communications,
