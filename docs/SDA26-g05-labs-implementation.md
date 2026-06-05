@@ -553,6 +553,228 @@ async def run_worker():
 
 ## Lab 3: REST API-Coupled External Worker with structured logging and telemetry
 
-### Setup
+Now we want to improve our REST API worker, by adding logs, metrics and traces using OpenTelemetry.
 
-#### OpenTelemetry
+### Context
+
+Adding the three pillars of observability (logs, metrics, and traces) to our microservice enables us to observe what the worker is doing, how long each operation takes, and diagnose failures without reading source code.
+
+#### Logs
+
+**Logs** are timestamped text records of discrete events.
+Our worker, so far, uses Python's logging module, which works, but has an important limitation: it is plain text.
+This means that it's difficult to query, correlate, and aggregate.
+We can fix this by switching to structured logging, which uses JSON objects. This enables us to have basically the same output in the terminal (with minor differences), but we have the possibility of indexing, filtering, and aggregating the entries using a log management system.
+
+#### Metrics
+
+**Metrics** are numeric measurements aggregated over time. 
+Adding them to our worker enables us to answer questions like "how many emails were sent in the last minute?" or "what is the 95th percentile processing time?".
+
+#### Traces
+
+A **trace** represents the end-to-end journey of a single unit of work through a system.
+A **span** is a single named, timed operation within a trace. 
+
+Each span records:
+- A name
+- A start time and duration
+- A trace ID — shared by all spans in the same trace, used to correlate them
+- A span ID — unique to this span
+- A parent span ID — the span ID of the parent (absent on the root span)
+- Attributes — key-value metadata (e.g. doc_id, recipient_count, http.status_code)
+- Events — timestamped annotations within the span (e.g. "SMTP connection established")
+- A status — OK or ERROR, with an optional error message
+
+In our worker, one trace corresponds to processing one **Communications** document, and the spans are the various sub-operations (fetch_document, serialize_body, send_email, update_status).
+
+Traces are useful to understand exactly what happend during a failed operation, how long each preceding step took, and what the HTTP response code was from the MZinga API. It is more detailed and easier to read than logs.
+
+### OpenTelemetry setup
+
+### Structured Logging
+
+```python
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        add_otel_context,
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+log = structlog.get_logger(service=SERVICE_NAME_VALUE)
+```
+
+### Traces Setup
+
+```python
+resource = Resource(attributes={
+    SERVICE_NAME: SERVICE_NAME_VALUE,
+    SERVICE_VERSION: "1.0.0",
+})
+
+tracer_provider = TracerProvider(resource=resource)
+otlp_exporter = OTLPSpanExporter(endpoint=f"{OTLP_ENDPOINT}/v1/traces")
+tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+trace.set_tracer_provider(tracer_provider)
+
+RequestsInstrumentor().instrument()
+tracer = trace.get_tracer(SERVICE_NAME_VALUE)
+```
+
+### Metrics Setup
+
+```python
+metric_reader = PrometheusMetricReader()
+meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+metrics.set_meter_provider(meter_provider)
+
+meter = metrics.get_meter(SERVICE_NAME_VALUE)
+
+emails_processed = meter.create_counter(
+    name="emails_processed_total",
+    description="Total number of communications processed",
+    unit="1",
+)
+processing_duration = meter.create_histogram(
+    name="email_processing_duration_seconds",
+    description="End-to-end duration of processing one communication",
+    unit="s",
+)
+smtp_duration = meter.create_histogram(
+    name="smtp_send_duration_seconds",
+    description="Duration of the SMTP send call",
+    unit="s",
+)
+poll_counter = meter.create_counter(
+    name="worker_poll_total",
+    description="Number of poll cycles",
+    unit="1",
+)
+```
+
+### Updated Methods
+
+#### send_email
+
+```python
+def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subject: str, html_body: str) -> None:
+    """Sends an email using SMTP. Measures the duration of the send operation and records it in a histogram."""
+    with tracer.start_as_current_span("send_email") as span:
+        span.set_attribute("recipient_count", len(to_list))
+        t0 = time.perf_counter()
+        
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_FROM
+        msg["To"] = ", ".join(to_list)
+        if cc_list: msg["Cc"] = ", ".join(cc_list)
+        
+        msg.attach(MIMEText(html_body, "html"))
+        
+        all_recipients = to_list + (cc_list or []) + (bcc_list or [])
+        
+        if not all_recipients:
+            log.warning("No recipients found. Skipping SMTP send.")
+            return
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.send_message(msg, to_addrs=all_recipients)
+            
+        smtp_duration.record(time.perf_counter() - t0)
+```
+
+#### process_document
+
+```python
+def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
+    """Processes a single communication document: updates status, resolves emails, serializes body, sends email, and updates status again. All steps are traced and logged."""
+    doc_id = doc["id"]
+    structlog.contextvars.bind_contextvars(doc_id=doc_id)
+
+    with tracer.start_as_current_span("process_communication") as span:
+        span.set_attribute("doc_id", doc_id)
+        t0 = time.perf_counter()
+        log.info("processing_started")
+
+        try:
+            api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
+
+            tos = resolve_emails(doc.get("tos", []))
+            ccs = resolve_emails(doc.get("ccs", []))
+            bccs = resolve_emails(doc.get("bccs", []))
+            
+            if not tos:
+                raise ValueError("No valid 'to' email addresses found")
+
+            with tracer.start_as_current_span("serialize_body") as s:
+                body_nodes = doc.get("body", [])
+                s.set_attribute("node_count", len(body_nodes))
+                html_content = serialize_body(body_nodes)
+
+            send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
+
+            api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
+            
+            duration = time.perf_counter() - t0
+            processing_duration.record(duration)
+            emails_processed.add(1, {"status": "sent", "recipient_count": len(tos)})
+            log.info("processing_completed", status="sent", duration_s=round(duration, 3))
+
+        except Exception as e:
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            span.record_exception(e)
+            log.error("processing_failed", error=str(e))
+            
+            emails_processed.add(1, {"status": "failed", "recipient_count": 0})
+            
+            try:
+                api_request(session, "PATCH", f"/api/communications/{doc_id}", {
+                    "status": "failed", 
+                    "error": str(e)
+                })
+            except Exception as patch_err:
+                log.error("failed_to_update_status", error=str(patch_err))
+
+    structlog.contextvars.unbind_contextvars("doc_id")
+```
+
+
+#### Main loop
+
+```python
+def run_worker() -> None:
+    log.info("worker_started", poll_interval_s=POLL_INTERVAL_SECONDS, prometheus_port=PROMETHEUS_PORT)
+    
+    with requests.Session() as session:
+        try:
+            log.info("performing_initial_authentication")
+            authenticate(session)
+        except Exception as e:
+            log.error("failed_to_authenticate", error=str(e))
+            return
+        while True:
+            try:
+                query = "/api/communications?where[status][equals]=pending&sort=createdAt&depth=1"
+                response_data = api_request(session, "GET", query)
+                docs = response_data.get("docs", [])
+                
+                if not docs:
+                    poll_counter.add(1, {"result": "empty"})
+                    time.sleep(POLL_INTERVAL_SECONDS)
+                    continue
+                    
+                poll_counter.add(1, {"result": "found", "count": len(docs)})
+
+                for doc in docs:
+                    process_document(session, doc)
+
+            except Exception as e:
+                log.error("error_during_polling_loop", error=str(e))
+                time.sleep(POLL_INTERVAL_SECONDS)
+```
