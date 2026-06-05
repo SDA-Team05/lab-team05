@@ -39,7 +39,7 @@ To show this field in the GUI, we must add it to the "defaultColumns" list in th
 ```
 
 And last, we need to modify the afterChange hook in order to support the new field.
-We set it so that, if an environment variable we define (**COMMUNICATIONS_EXTERNAL_WORKER**) is set to "true", once a document is created we set the document status to "pending" and we immediately return:
+We set it so that, if an environment variable we define (`COMMUNICATIONS_EXTERNAL_WORKER`) is set to "true", once a document is created we set the document status to "pending" and we immediately return:
 ```javascript
     afterChange: [
         async ({ doc, operation }) => {  
@@ -109,7 +109,7 @@ logger = logging.getLogger(__name__)
 
 #### MongoDB
 
-Before getting to the business logic, we log into MongoDB, and store the columns that we need in variables: *communications* and *users*.
+Before getting to the business logic, we log into MongoDB, and store the columns that we need in variables: `communications` and `users`.
 
 ```python
 client = MongoClient(MONGODB_URI)
@@ -165,7 +165,7 @@ def serialize_body(nodes: List[Dict[str, Any]]) -> str:
 
 #### resolve_emails
 
-In MZinga, the email recipients (tos), the Carbon Copies (ccs) and the Blind Carbon Copies (bccs) are not directly present in the communication, but are implemented as a reference to the actual addresses in the *users* collection.
+In MZinga, the email recipients (tos), the Carbon Copies (ccs) and the Blind Carbon Copies (bccs) are not directly present in the communication, but are implemented as a reference to the actual addresses in the `users` collection.
 For this reason, we need a function to resolve the ids to actual email addresses.
 
 ```python
@@ -224,10 +224,10 @@ def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subj
 #### process
 
 The core function of the worker, which:
-- Gathers all of the addresses with the *resolve_emails* function
-- Converts the body to html with the *serialize_body* function
-- Sends the email with the *resolve_emails* function
-- Sets the doc status to *sent*
+- Gathers all of the addresses with the `resolve_emails` function
+- Converts the body to html with the `serialize_body` function
+- Sends the email with the `resolve_emails` function
+- Sets the doc status to `sent*
 
 ```python 
 def process(doc: Dict[str, Any]) -> None:
@@ -259,8 +259,8 @@ def process(doc: Dict[str, Any]) -> None:
 With all of the previous functions declared, we can write the "main" function, which:
 - Logs the startup
 - Polls one pending document
-- Immediately sets its status to *processing*, to prevent two worker instances from processing the same document.
-- Calls the *process* function, which gathers and converts all the necessary data and sends the email
+- Immediately sets its status to `processing*, to prevent two worker instances from processing the same document.
+- Calls the `process` function, which gathers and converts all the necessary data and sends the email
 - Sleeps for the configured time before trying to poll again
 
 ```python
@@ -286,7 +286,7 @@ In the second version of the worker, the database coupling is removed. Instead, 
 
 
 ### Mzinga Setup
-In order to enable our microservice to update the document status through REST API, we must explicitly allow it in the access rules. So, we set the update rule to use *access.GetIsAdmin*: this way, Admin users can update documents (our worker will be authenticated as an admin).
+In order to enable our microservice to update the document status through REST API, we must explicitly allow it in the access rules. So, we set the update rule to use `access.GetIsAdmin*: this way, Admin users can update documents (our worker will be authenticated as an admin).
 
 ```python
   access: {
@@ -327,7 +327,7 @@ def authenticate(session: requests.Session) -> None:
 ```
 #### api_request
 
-We then write a function that can send any kind of API request. If the authorization token expires, the *authenticate* function is automatically called again.
+We then write a function that can send any kind of API request. If the authorization token expires, the `authenticate` function is automatically called again.
 
 ```python
 def api_request(session: requests.Session, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
@@ -351,8 +351,8 @@ def api_request(session: requests.Session, method: str, endpoint: str, data: Opt
 ### New resolve_email
 
 This time we can't access directly the data in MongoDB, but we still need to resolve the email addresses.
-Luckily, in MZingas' endpoint for retrieving communications, if we put *depth=1* as a parameter, the relationships get authomatically resolved.
-For this reason, the *resolve_emails* functions now only serves the purpose of extracting the email addresses.
+Luckily, in MZingas' endpoint for retrieving communications, if we put `depth=1` as a parameter, the relationships get authomatically resolved.
+For this reason, the `resolve_emails` functions now only serves the purpose of extracting the email addresses.
 
 ```python
 def resolve_emails(refs: List[Dict]) -> List[str]:
@@ -419,7 +419,7 @@ With all of the functions declared, we can write the "main" function, which:
 - Logs the startup
 - Performs an initial authentication, and immediately stops if it fails
 - Polls the pending documents
-- If there are pending documents, calls the *process* function for each one, which gathers and converts all the necessary data and sends the email
+- If there are pending documents, calls the `process` function for each one, which gathers and converts all the necessary data and sends the email
 - Sleeps for the configured time before trying to poll again
 
 ```python
@@ -483,7 +483,7 @@ The only component that sees some changes to the logic is the Main function, whi
 - Logs the startup
 - Performs an initial authentication, and immediately stops if it fails
 - Connetts to RabbitMQ
-- If an event is published, it makes an API request to fetch the pending documents and calls the *process* function for each one.
+- If an event is published, it makes an API request to fetch the pending documents and calls the `process` function for each one.
 
 ```python
 async def run_worker():
@@ -586,15 +586,24 @@ Each span records:
 - Events — timestamped annotations within the span (e.g. "SMTP connection established")
 - A status — OK or ERROR, with an optional error message
 
-In our worker, one trace corresponds to processing one **Communications** document, and the spans are the various sub-operations (fetch_document, serialize_body, send_email, update_status).
+In our worker, one trace corresponds to processing one **Communications** document, and the spans are the various sub-operations ('fetch_document', 'serialize_body', 'send_email', 'update_status').
 
 Traces are useful to understand exactly what happend during a failed operation, how long each preceding step took, and what the HTTP response code was from the MZinga API. It is more detailed and easier to read than logs.
 
-### OpenTelemetry setup
-
 ### Structured Logging
 
+To add structured logging, we use Python's 'structlog' library.
+To native link our logs with open traces, we implement a custom context processor function add_otel_context. This processor extracts the active span's context and dynamically injects hex-formatted trace_id and span_id fields into every structured JSON log entry.
+
 ```python
+def add_otel_context(logger: logging.Logger, method: str, event_dict: dict) -> dict:
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if ctx.is_valid:
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
@@ -610,7 +619,11 @@ structlog.configure(
 log = structlog.get_logger(service=SERVICE_NAME_VALUE)
 ```
 
+After this, we need to modify the logs in every call inside the functions.
+
 ### Traces Setup
+
+We initialize the OpenTelemetry Tracer Provider using an HTTP OTLP Span Exporter and instrument the standard Python requests library. This guarantees that all outbound HTTP requests to the MZinga API are automatically captured as spans ('fetch_doc', 'update_status', 'login') so there is no need to modify the methods.
 
 ```python
 resource = Resource(attributes={
@@ -627,9 +640,14 @@ RequestsInstrumentor().instrument()
 tracer = trace.get_tracer(SERVICE_NAME_VALUE)
 ```
 
+After this, we need to manually add the spans for out custom methods.
+
 ### Metrics Setup
 
+We spin up a background HTTP server via prometheus_client on the designated port so Prometheus can scrape our metrics. Then, we link OpenTelemetry metrics to a PrometheusMetricReader and register our custom execution counters and histograms.
+
 ```python
+start_http_server(port=PROMETHEUS_PORT)
 metric_reader = PrometheusMetricReader()
 meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
 metrics.set_meter_provider(meter_provider)
@@ -660,7 +678,11 @@ poll_counter = meter.create_counter(
 
 ### Updated Methods
 
+With telemetry and structured logging configurations initialized, we update our core processing methods to track internal execution blocks, manage errors within spans, and record metric milestones.
+
 #### send_email
+
+We enclose the SMTP interaction inside an explicit tracking span, recording metadata attributes like the total recipient count and capturing execution time using high-precision timers.
 
 ```python
 def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subject: str, html_body: str) -> None:
@@ -690,6 +712,8 @@ def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subj
 ```
 
 #### process_document
+
+This core orchestration function sets up the root lifecycle trace span (process_communication) and leverages structlog.contextvars to contextually lock the doc_id to all inner logs. It also explicitly traces the HTML body parsing logic and handles metrics and exception states accurately.
 
 ```python
 def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
@@ -746,6 +770,8 @@ def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
 
 
 #### Main loop
+
+The daemon entry loop initializes structural context logs upon engine start and increments metric poll counters for both active document discovery cycles and idle polling periods.
 
 ```python
 def run_worker() -> None:
