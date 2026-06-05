@@ -84,7 +84,11 @@ COMMUNICATIONS_EXTERNAL_WORKER=true
 
 ### Microservice Setup
 
+We then create our microservice, and we start by defining some parts that aren't strictly tied to the business logic, but are needed for the proper functioning of the worker.
+
 #### Environment Variables
+
+The first thing we do is setting all of the environment variables needed to authenticate on MongoDB, decide the poll interval and set the SMTP Client.
 
 ```python
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:admin@localhost:27017/mzinga?authSource=admin&directConnection=true")
@@ -96,12 +100,17 @@ EMAIL_FROM = os.getenv("EMAIL_FROM", "worker@mzinga.io")
 
 #### Logger
 
+To understand what is happening in our worker and debug, we set a logger.
+
 ```python
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 ```
 
 #### MongoDB
+
+Before getting to the business logic, we log into MongoDB, and store the columns that we need in variables: *communications* and *users*.
+
 ```python
 client = MongoClient(MONGODB_URI)
 db = client.get_database() 
@@ -273,9 +282,27 @@ def run_worker():
 ```
 
 ## Lab 2: REST API-Coupled External Worker
-The database coupling is removed. The external worker interacts with MZinga exclusively through its auto-generated REST API, authenticated via JWT. The Remote Facade pattern governs the integration. The worker is now schema-agnostic.
+In the second version of the worker, the database coupling is removed. Instead, it interacts with MZinga exclusively through its auto-generated REST API, authenticated via JWT. The worker is now schema-agnostic.
 
-### Setup
+
+### Mzinga Setup
+In order to enable our microservice to update the document status through REST API, we must explicitly allow it in the access rules. So, we set the update rule to use *access.GetIsAdmin*: this way, Admin users can update documents (our worker will be authenticated as an admin).
+
+```python
+  access: {
+    read: access.GetIsAdmin,
+    create: access.GetIsAdmin,
+    delete: () => {
+      return false;
+    },
+    update: access.GetIsAdmin,
+  },
+```
+
+### Microservice Setup
+
+Now we can start writing our microservice. We start from the previous one and add the credentials for login (created from the application dashboard) and the URL for the API calls.
+
 ```python
 API_URL = os.getenv("MZINGA_URL")
 ADMIN_EMAIL = os.getenv("MZINGA_EMAIL")
@@ -283,6 +310,9 @@ ADMIN_PASSWORD = os.getenv("MZINGA_PASSWORD")
 ```
 
 ### Authentication
+
+To perform the API requests that require authentication, we write a method that authenticates the service using the inserted credentials and stores the returned token in the session header.
+
 ```python
 def authenticate(session: requests.Session) -> None:
     """Authenticates the session and updates its headers with the token."""
@@ -296,6 +326,9 @@ def authenticate(session: requests.Session) -> None:
     logger.info("Authenticated")
 ```
 #### api_request
+
+We then write a function that can send any kind of API request. If the authorization token expires, the *authenticate* function is automatically called again.
+
 ```python
 def api_request(session: requests.Session, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
     """Executes an API request with automatic re-authentication on 401 errors."""
@@ -315,7 +348,12 @@ def api_request(session: requests.Session, method: str, endpoint: str, data: Opt
     return response.json() if response.content else {}
 ```
 
-### email addresses Resolution
+### New resolve_email
+
+This time we can't access directly the data in MongoDB, but we still need to resolve the email addresses.
+Luckily, in MZingas' endpoint for retrieving communications, if we put *depth=1* as a parameter, the relationships get authomatically resolved.
+For this reason, the *resolve_emails* functions now only serves the purpose of extracting the email addresses.
+
 ```python
 def resolve_emails(refs: List[Dict]) -> List[str]:
     """Resolves Payload relationship references to email addresses."""
@@ -332,7 +370,58 @@ def resolve_emails(refs: List[Dict]) -> List[str]:
     return emails
 ```
 
-### Complete Worker Flow
+### New process_document
+
+The new process_document function is mostly identical to the previous one, with the only differences being that it now also handles the setting of the document status to "processing" and that it now uses the API requests for all of the status modifications.
+
+```python
+def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
+    """Processes a single communication document: updates status, resolves emails, serializes body, sends email, and updates status again."""
+    doc_id = doc["id"]
+
+    logger.info(f"Processing Communication ID: {doc_id}")
+
+    try:
+        api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "processing"})
+
+        tos = resolve_emails(doc.get("tos", []))
+        ccs = resolve_emails(doc.get("ccs", []))
+        bccs = resolve_emails(doc.get("bccs", []))
+        
+        if not tos:
+            raise ValueError("No valid 'to' email addresses found")
+        
+        body_nodes = doc.get("body", [])
+
+        html_content = serialize_body(body_nodes)
+        
+        send_email(tos, ccs, bccs, doc.get("subject", "(No Subject)"), html_content)
+
+        api_request(session, "PATCH", f"/api/communications/{doc_id}", {"status": "sent"})
+        
+        logger.info(f"Successfully sent: {doc_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process Communication ID: {doc_id}: {str(e)}")
+        
+        try:
+            api_request(session, "PATCH", f"/api/communications/{doc_id}", {
+                "status": "failed", 
+                "error": str(e)
+            })
+        except Exception as patch_err:
+            logger.error(f"Failed to update status for Communication ID: {doc_id}: {str(patch_err)}")
+```
+
+### Main loop
+
+With all of the functions declared, we can write the "main" function, which:
+- Logs the startup
+- Performs an initial authentication, and immediately stops if it fails
+- Polls the pending documents
+- If there are pending documents, calls the *process* function for each one, which gathers and converts all the necessary data and sends the email
+- Sleeps for the configured time before trying to poll again
+
 ```python
 def run_worker():
     logger.info(f"Worker connected to API. Polling every {POLL_INTERVAL_SECONDS}s...")
@@ -363,16 +452,21 @@ def run_worker():
 ```
 
 ## Lab 2 - b: Event-Driven Microservice via RabbitMQ
-The polling is removed. The monolith publishes an event to RabbitMQ when a `Communications` document is saved — requiring only an environment variable change, no code modification. The worker subscribes and reacts. The Publish/Subscribe pattern governs the integration. The monolith and the worker are fully decoupled.
 
-### Setup
+In this optional extension, we move from a REST API based microservice to a more efficient Event based one. This way, we can entirely remove the polling. MZinga supports publishing events to RabbitMQ when a `Communications` document is saved,  requiring only an environment variable change.
 
-#### MZinga Configuration
+### MZinga Setup
+
+The first thing we need to do is change the environment variables so that MZinga can start publishing events on RabbitMQ.
+
 ```python
 RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 HOOKSURL_COMMUNICATIONS_AFTERCHANGE=rabbitmq
 ```
-#### Environment Variables
+
+### Microservice Setup
+
+We need to configure the microservice with all of the necessary data to read events from RabbitMQ
 
 ```python
 RABBITMQ_URL = os.environ["RABBITMQ_URL"]
@@ -381,7 +475,16 @@ EXCHANGE_NAME = os.environ["EXCHANGE_NAME"]
 QUEUE_NAME = os.environ["QUEUE_NAME"]
 ```
 
-### Complete Worker Flow
+### Main loop
+
+All of the processing functions remain largely unchanged, since the modifications to the document status still happen through API calls.
+
+The only component that sees some changes to the logic is the Main function, which now:
+- Logs the startup
+- Performs an initial authentication, and immediately stops if it fails
+- Connetts to RabbitMQ
+- If an event is published, it makes an API request to fetch the pending documents and calls the *process* function for each one.
+
 ```python
 async def run_worker():
     with requests.Session() as session:
