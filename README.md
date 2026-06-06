@@ -1,9 +1,26 @@
-# AY-25-26-labs
-Laboratories
+# AY-25-26-labs-g05
 
-## Documentation for Lab1 and Lab2
+Repository for the Group 05 implementations of the laboratories.
 
-Read in order — each document builds on the previous one.
+A detailed report on how the various versions of the worker have been implemented is available in 
+[docs/SDA26-g05-labs-implementation.md](docs/SDA26-g05-labs-implementation.md)
+
+## Lab files
+
+The paths containing the implementations of the labs are the following:
+
+| # | Folder |
+|---|---|
+| Lab 1 | **Worker**: [lab1-worker](lab1-worker/), **MZinga**: [Communications](mzinga/mzinga-apps/src/collections/Communications.ts)|
+| Lab 2-a | **Worker**: [lab2-worker-rest](lab2-worker-rest/) |
+| Lab 2-b | **Worker**: [lab2-worker-events](lab2-worker-events/) |
+| Lab 3 | **Worker**: [lab3-worker-observable](lab3-worker-observable/) |
+| Lab 4-a | **Deployment Files**: [mzinga/lab4-k8s](mzinga/lab4-k8s/) |
+| Lab 4-b | **Deployment Files**: [mzinga/lab3](mzinga/lab3), **Dockerfile**: [lab3-worker-observable/Dockerfile](lab3-worker-observable/Dockerfile) |
+
+## Documentation
+
+The original documentation is the following:
 
 | # | Document | Contents |
 |---|---|---|
@@ -17,3 +34,13 @@ Read in order — each document builds on the previous one.
 | 6b | [Lab 1 Code Snippets](docs/06-lab1-code-snippets.md) | All code snippets for Lab 1 with macOS, Linux, and Windows variants |
 | 7 | [Lab 2 Step by Step](docs/07-lab2-step-by-step.md) | REST API worker (core) + event-driven RabbitMQ worker (optional extension) |
 | 7b | [Lab 2 Code Snippets](docs/07-lab2-code-snippets.md) | All code snippets for Lab 2 with macOS, Linux, and Windows variants |
+| 8 | [Lab 3 Step by Step](docs/08-lab3-step-by-step.md) | Observability: structured logging, OpenTelemetry traces and spans, Prometheus metrics |
+| 8b | [Lab 3 Code Snippets](docs/08-lab3-code-snippets.md) | Full instrumented worker with structlog, OpenTelemetry, and Prometheus |
+| 9a | [Kubernetes Introduction](docs/09a-kubernetes-introduction.md) | What Kubernetes is, core concepts (Pod, Deployment, Service), and why it matters for deployment strategies |
+| 9b | [Minikube Setup](docs/09b-minikube-setup.md) | Install and run minikube on macOS, Linux, Windows WSL, and Windows native (assumes Docker already installed) |
+| 9c | [Docker Setup](docs/09c-docker-setup.md) | Install Docker Engine or Docker Desktop on macOS, Linux, Windows WSL, and Windows native — reference if Docker is not already present |
+| 9d | [Helm Charts](docs/09d-helm-charts.md) | From plain Kubernetes YAML to Helm: parameterisation, release tracking, application-level rollback, multi-component applications, and deploying MZinga with the official Helm chart |
+| 9e | [Kubernetes UI Tools](docs/09e-k8s-ui-tools.md) | K9s (terminal UI) and OpenLens (desktop GUI) — installation on macOS, Linux, and Windows, and how to use them to observe deployments in this lab |
+| 9 | [Lab 4 Step by Step](docs/09-lab4-step-by-step.md) | Deployment models: in-place rolling update, blue-green deployment, and canary release with Kubernetes |
+| 9c | [Lab 4 Code Snippets](docs/09-lab4-code-snippets.md) | All Kubernetes manifests, Dockerfile, and commands for all three deployment strategies |
+| 10 | [Conclusion](docs/10-conclusion.md) | The full journey across all four labs: how each architectural transition constrained the deployment strategy, why Recreate was mandatory for the v1→v2 worker switch, how RabbitMQ unlocks safe horizontal scaling, and a complete deployment timeline |

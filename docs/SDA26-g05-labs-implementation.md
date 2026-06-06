@@ -917,7 +917,7 @@ A **Deployment** is a configuration document used to declare the desired state f
 
 It allows to specify details like the number of application instances, the container images to use, and other settings.
 
-The files are available in [mzinga-lab3/templates/](../templates)
+The files are available in [mzinga-lab3/templates/](../mzinga-lab3/templates)
 
 ### Services
 
@@ -940,4 +940,4 @@ spec:
       targetPort: {{ .Values.mzingaApps.service.port }}
 ```
 
-The files are available in [mzinga-lab3/templates/](../templates)
+The files are available in [mzinga-lab3/templates/](../mzinga-lab3/templates)
