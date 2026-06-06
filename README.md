@@ -16,7 +16,7 @@ The paths containing the implementations of the labs are the following:
 | 2-b | **Worker**: [lab2-worker-events](lab2-worker-events/) |
 | 3 | **Worker**: [lab3-worker-observable](lab3-worker-observable/) |
 | 4-a | **Deployment Files**: [mzinga/lab4-k8s](mzinga/lab4-k8s/) |
-| 4-b | **Deployment Files**: [mzinga/lab3](mzinga/lab3), **Dockerfile**: [lab3-worker-observable/Dockerfile](lab3-worker-observable/Dockerfile) |
+| 4-b | **Deployment Files**: [mzinga-lab3](mzinga-lab3/), **Dockerfile**: [lab3-worker-observable/Dockerfile](lab3-worker-observable/Dockerfile) |
 
 ## Documentation
 
