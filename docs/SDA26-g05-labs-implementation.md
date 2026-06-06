@@ -1,11 +1,26 @@
 # Software Design and Architecture - Group 05 labs implementation
 
 ## Lab objectives
-The laboratory revolves around decoupling the Email processing function from MZinga. Currently, MZinga has
+
+The laboratory revolves around decoupling the Email processing function from MZinga.
+To do this we have to modify the source code of the application, in order to stop it from processing the emails, and write an external microservice to process them instead.
+
+This strategy is called the **Strangler Fig**, consisting in making new components that replicate some behavior of an existing monolith, progressively replacing it completely. It's important to keep the changes reversible, in order to rollback if the new microservice is not working es expected.
+
+Delegating functionalities to external workers enables:
+- **Segregation of concerns**: each concern is independently testable, deployable, and replaceable.
+
+- **Language freedom**: the new service no longer needs to be written in TypeScript.
+
+- **Replaceability of components**: for any modification to the feature, we can modify the microservice without ever touching the monolith.
+  
+- **Independent scalability**: it's possible to add more worker instances, with no impact on the monolith's ability to serve the admin UI and REST API.
+
+- **Fault isolation**: if the delivery fails, the failure is contained entirely within the worker, and is retried without any user-facing impact on the core application.
 
 ## Lab 1: DB-Coupled External Worker
 
-The goal for the lab was to introduce a new service, with the responsibility of reading the communications pending processing from the MongoDB database. In this first version, the service reads directly from the shared MongoDB database. 
+The goal for the lab was to introduce a new service, with the responsibility of reading the communications pending processing from the MongoDB database, and to configure MZinga to support it. In this first version, the service reads directly from the shared MongoDB database. 
 
 ### MZinga Setup
 
@@ -15,7 +30,7 @@ The first thing that needs to be done is configuring MZinga to allow the usage o
 
 To allow our worker to understand which communications need to be processed, we must add a "status" fields to the communications.
 
-```javascript
+```typescript
     {
       name: "status",
       type: "select",
@@ -34,13 +49,14 @@ To allow our worker to understand which communications need to be processed, we 
 
 To show this field in the GUI, we must add it to the "defaultColumns" list in the admin block:
 
-```javascript
+```typescript
     defaultColumns: ["subject", "tos", "status"],
 ```
 
 And last, we need to modify the afterChange hook in order to support the new field.
 We set it so that, if an environment variable we define (`COMMUNICATIONS_EXTERNAL_WORKER`) is set to "true", once a document is created we set the document status to "pending" and we immediately return:
-```javascript
+
+```typescript
     afterChange: [
         async ({ doc, operation }) => {  
         if (process.env.COMMUNICATIONS_EXTERNAL_WORKER === "true") { 
@@ -57,7 +73,7 @@ We set it so that, if an environment variable we define (`COMMUNICATIONS_EXTERNA
 ```
 If set to false, we keep the old logic and set the document status to "sent":
 
-```javascript
+```typescript
     ...
     await payload.update({
     collection: Slugs.Communications,
@@ -68,11 +84,14 @@ If set to false, we keep the old logic and set the document status to "sent":
 
 To avoid endless loops, we add a guard on top of the hook:
 
-```javascript
+```typescript
     if (doc.status === "pending" || doc.status === "sent") {
         return doc;
     }
 ```
+
+The full implementation is available in [mzinga/mzinga-apps/src/collections/Communications.ts](../mzinga/mzinga-apps/src/collections/Communications.ts)
+
 
 #### Environment Variable
 
@@ -281,6 +300,8 @@ def run_worker():
             time.sleep(POLL_INTERVAL_SECONDS)
 ```
 
+The full implementation is available in [lab1-worker/worker.py](../lab1-worker/worker.py)
+
 ## Lab 2: REST API-Coupled External Worker
 In the second version of the worker, the database coupling is removed. Instead, it interacts with MZinga exclusively through its auto-generated REST API, authenticated via JWT. The worker is now schema-agnostic.
 
@@ -451,6 +472,8 @@ def run_worker():
                 time.sleep(POLL_INTERVAL_SECONDS)
 ```
 
+The full implementation is available in [lab2-worker-rest/worker.py](../lab2-worker-rest/worker.py)
+
 ## Lab 2 - b: Event-Driven Microservice via RabbitMQ
 
 In this optional extension, we move from a REST API based microservice to a more efficient Event based one. This way, we can entirely remove the polling. MZinga supports publishing events to RabbitMQ when a `Communications` document is saved,  requiring only an environment variable change.
@@ -550,6 +573,8 @@ async def run_worker():
                             logger.error(f"HTTP error processing message: {e}")
                             raise
 ```
+
+The full implementation is available in [lab2-worker-events/worker.py](../lab2-worker-events/worker.py)
 
 ## Lab 3: REST API-Coupled External Worker with structured logging and telemetry
 
@@ -713,7 +738,7 @@ def send_email(to_list: List[str], cc_list: List[str], bcc_list: List[str], subj
 
 #### process_document
 
-This core orchestration function sets up the root lifecycle trace span (process_communication) and leverages structlog.contextvars to contextually lock the doc_id to all inner logs. It also explicitly traces the HTML body parsing logic and handles metrics and exception states accurately.
+Here we set up the root lifecycle trace span (process_communication) and leverage structlog.contextvars to contextually lock the doc_id to all inner logs. It also explicitly traces the HTML body parsing logic and handles metrics and exception states accurately.
 
 ```python
 def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
@@ -771,7 +796,9 @@ def process_document(session: requests.Session, doc: Dict[str, Any]) -> None:
 
 #### Main loop
 
-The daemon entry loop initializes structural context logs upon engine start and increments metric poll counters for both active document discovery cycles and idle polling periods.
+The two modifications to the main loop are the following:
+- We update logs with the structural context
+- We increments metric poll counters for both active document discovery cycles and idle polling periods.
 
 ```python
 def run_worker() -> None:
@@ -804,3 +831,113 @@ def run_worker() -> None:
                 log.error("error_during_polling_loop", error=str(e))
                 time.sleep(POLL_INTERVAL_SECONDS)
 ```
+
+The full implementation is available in [lab3-worker-observable/worker.py](../lab3-worker-observable/worker.py)
+
+## Lab 4 - b: Kubernetes deployment with Helm
+
+While lab4 was about some experiments with Kubernetes deployments, we also did the optional extension, which revolved around making an Helm Chart for MZinga, our worker and all of the necessary dependencies.
+
+### Helm Chart
+
+A Helm **Chart** is a collection of files that describe a related set of Kubernetes resources.
+
+Here we write the dependencies of MZinga and our worker, and the link to the repository from which they can be downloaded.
+
+```yaml
+apiVersion: v2
+name: mzinga-lab3
+description: MZinga Lab 3 — observable email worker with full infrastructure stack
+type: application
+version: 1.0.0        # chart version — increment when the chart itself changes
+appVersion: "0.9.3"   # mzinga-apps version — informational, shown in helm list
+
+dependencies:
+  - name: mongodb
+    version: "15.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    alias: mongodb
+  - name: rabbitmq
+    version: "14.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    alias: rabbitmq
+  - name: redis
+    version: "19.0.0"
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    alias: redis
+```
+
+The chart is available in [mzinga-lab3/Chart.yaml](../mzinga-lab3/Chart.yaml)
+
+### Dockerfile
+
+Since our email worker is not published to any repository we need to build the image, to make it available inside minikube.
+
+```dockerfile
+FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY worker.py .
+CMD ["python", "-u", "worker.py"]
+```
+
+The Dockerfile is available in [lab3-worker-observable/Dockerfile](../lab3-worker-observable/Dockerfile)
+
+### values.yaml
+
+For each component, we must configure values such as image tags, replica counts, connection strings, resource limits...
+We define them in the `values.yaml` file.
+
+The file is available in [mzinga-lab3/values.yaml](../mzinga-lab3/values.yaml)
+
+### Secrets
+
+Credentials, such as the ones necessary to authenticate the worker, are stored in a `Secret` object. 
+
+In the `secrest.yaml` file, we define the credentials, but their value is initialized at install time.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-worker-credentials
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  mzinga-email: {{ required "emailWorker.credentials.email is required" .Values.emailWorker.credentials.email | quote }}
+  mzinga-password: {{ required "emailWorker.credentials.password is required" .Values.emailWorker.credentials.password | quote }}
+```
+
+The file is available in [mzinga-lab3/templates/secrets.yaml](../templates/secrets.yaml)
+
+### Deployments
+
+A **Deployment** is a configuration document used to declare the desired state for applications in a Kubernetes cluster.
+
+It allows to specify details like the number of application instances, the container images to use, and other settings.
+
+The files are available in [mzinga-lab3/templates/](../templates)
+
+### Services
+
+A **Service** is a resource that maps network traffic to the Pods inside a cluster.
+
+Each component needs a corresponding Service, and the pattern is the same for all of them, here the one for MZinga is provided as an example:
+
+```yaml
+# templates/mzinga-apps-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-mzinga-apps
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: {{ .Release.Name }}-mzinga-apps
+  ports:
+    - port: {{ .Values.mzingaApps.service.port }}
+      targetPort: {{ .Values.mzingaApps.service.port }}
+```
+
+The files are available in [mzinga-lab3/templates/](../templates)
