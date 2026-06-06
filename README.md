@@ -9,14 +9,14 @@ A detailed report on how the various versions of the worker have been implemente
 
 The paths containing the implementations of the labs are the following:
 
-| # | Folder |
+| Lab # | Folder |
 |---|---|
-| Lab 1 | **Worker**: [lab1-worker](lab1-worker/), **MZinga**: [Communications](mzinga/mzinga-apps/src/collections/Communications.ts)|
-| Lab 2-a | **Worker**: [lab2-worker-rest](lab2-worker-rest/) |
-| Lab 2-b | **Worker**: [lab2-worker-events](lab2-worker-events/) |
-| Lab 3 | **Worker**: [lab3-worker-observable](lab3-worker-observable/) |
-| Lab 4-a | **Deployment Files**: [mzinga/lab4-k8s](mzinga/lab4-k8s/) |
-| Lab 4-b | **Deployment Files**: [mzinga/lab3](mzinga/lab3), **Dockerfile**: [lab3-worker-observable/Dockerfile](lab3-worker-observable/Dockerfile) |
+|  1 | **Worker**: [lab1-worker](lab1-worker/), **MZinga**: [Communications](mzinga/mzinga-apps/src/collections/Communications.ts)|
+| 2-a | **Worker**: [lab2-worker-rest](lab2-worker-rest/) |
+| 2-b | **Worker**: [lab2-worker-events](lab2-worker-events/) |
+| 3 | **Worker**: [lab3-worker-observable](lab3-worker-observable/) |
+| 4-a | **Deployment Files**: [mzinga/lab4-k8s](mzinga/lab4-k8s/) |
+| 4-b | **Deployment Files**: [mzinga/lab3](mzinga/lab3), **Dockerfile**: [lab3-worker-observable/Dockerfile](lab3-worker-observable/Dockerfile) |
 
 ## Documentation
 
